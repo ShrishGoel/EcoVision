@@ -1,0 +1,3 @@
+# Ignore raw and processed datasets
+data/rawData/
+data/processedData/
