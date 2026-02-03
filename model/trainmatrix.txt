@@ -1,0 +1,18 @@
+========================================
+RUNNING FINAL CLASSIFICATION REPORT
+========================================
+              precision    recall  f1-score   support
+
+   black bin       0.83      0.88      0.86       305
+    blue bin       0.95      0.91      0.93       611
+   green bin       0.92      0.99      0.95       127
+
+    accuracy                           0.91      1043
+   macro avg       0.90      0.93      0.91      1043
+weighted avg       0.91      0.91      0.91      1043
+
+
+CONFUSION MATRIX
+[[268  29   8]
+ [ 52 556   3]
+ [  1   0 126]]

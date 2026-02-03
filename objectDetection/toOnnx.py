@@ -1,29 +1,34 @@
 import torch
-from torchvision.models import mobilenet_v3_small 
+import torch.nn as nn
+from torchvision import models
 
-model = mobilenet_v3_small(weights=None)
 
-# 2. MobileNetV3 Surgery
-# The classifier is a Sequence of [Linear, Hardswish, Dropout, Linear]
-# We need to grab the input features of the very last layer
-in_features = model.classifier[3].in_features
-model.classifier[3] = torch.nn.Linear(in_features, 3)
+num_classes = 3 
+LOAD_PATH = 'mobilenetv3_finetuned_best.pth'
 
-# 3. Load your weights
-# Ensure the .pth file contains a state_dict for MobileNetV3
-model.load_state_dict(torch.load('mobilenetv3_balanced.pth', map_location='cpu'))
+
+model = models.mobilenet_v3_large(weights=None) 
+model.classifier[3] = nn.Linear(model.classifier[3].in_features, num_classes)
+
+
+state_dict = torch.load(LOAD_PATH, map_location='cpu')
+model.load_state_dict(state_dict)
 model.eval()
 
-# 4. Export logic
 dummy_input = torch.randn(1, 3, 224, 224)
+
+print(f"Exporting {LOAD_PATH} to ONNX...")
+
 torch.onnx.export(
     model,
     dummy_input,
     "model_mobilenetv3.onnx",
+    export_params=True, 
+    opset_version=12,
+    do_constant_folding=True, 
     input_names=['input'],
     output_names=['output'],
-    verbose=True,
     dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}}
 )
 
-print("MobileNetV3 successfully exported to model_mobilenetv3.onnx")
+print("Success! MobileNetV3 successfully exported to model_mobilenetv3.onnx")

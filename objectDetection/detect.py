@@ -1,152 +1,94 @@
 import cv2
 import numpy as np
 import onnxruntime as ort
-from collections import Counter
 import time
+import threading
+from queue import Queue
 
 # ==================== CONFIGURATION ====================
-MODEL_PATH = 'model_resnet.onnx'
+MODEL_PATH = 'model.onnx'
 LABELS = ["black", "blue", "green"]
 EDGE_THRESHOLD = 500
-NUM_FRAMES = 5
-COOLDOWN_SECONDS = 7
-FRAME_WIDTH = 320
-FRAME_HEIGHT = 240
-DETECTION_SCALE = 0.5
+COOLDOWN_SECONDS = 3
+TARGET_SIZE = 224
+TEMPERATURE = 0.5
 
-# ==================== MODEL SETUP ====================
-def load_model(model_path):
-    """Load ONNX model optimized for ARM"""
-    # Use CPU execution provider
-    session = ort.InferenceSession(
-        model_path,
-        providers=['CPUExecutionProvider']
-    )
-    input_name = session.get_inputs()[0].name
-    print(f"Model input: {input_name}")
-    print(f"Model loaded successfully")
-    return session, input_name
+# ImageNet Constants for cv2.dnn
+MEAN = (0.485 * 255, 0.456 * 255, 0.406 * 255)
+STD = (1.0 / (0.229 * 255), 1.0 / (0.224 * 255), 1.0 / (0.225 * 255))
 
-# ==================== PREPROCESSING ====================
-MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(1, 3, 1, 1)
-STD = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(1, 3, 1, 1)
-
-def preprocess_frame(frame):
-    """Preprocess single frame for ONNX"""
-    img = cv2.resize(frame, (224, 224))
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img = img.astype(np.float32) / 255.0
-    img = np.transpose(img, (2, 0, 1))  # HWC -> CHW
-    return img
-
-def preprocess_batch(frames):
-    """Batch preprocessing with normalization"""
-    batch = np.stack([preprocess_frame(f) for f in frames])
-    batch = (batch - MEAN) / STD  # Normalization happens here
-    return batch.astype(np.float32)
-
-# ==================== DETECTION ====================
-def detect_object_presence(frame, scale=0.5):
-    """Edge detection for object presence"""
-    small = cv2.resize(frame, None, fx=scale, fy=scale)
-    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+# ==================== OPTIMIZED SESSION ====================
+def load_optimized_model(model_path):
+    options = ort.SessionOptions()
+    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    options.intra_op_num_threads = 4 
     
-    v = np.median(blurred)
-    edges = cv2.Canny(blurred, int(0.67 * v), int(1.33 * v))
-    
-    edge_count = cv2.countNonZero(edges) / (scale * scale)
-    return int(edge_count)
+    session = ort.InferenceSession(model_path, options, providers=['CPUExecutionProvider'])
+    return session, session.get_inputs()[0].name
 
-# ==================== INFERENCE ====================
-def predict_batch(session, input_name, frames):
-    """ONNX batch inference"""
-    batch = preprocess_batch(frames)
-    outputs = session.run(None, {input_name: batch})[0]
-    predictions = np.argmax(outputs, axis=1)
-    return predictions
+# ==================== THE TURBO SCRIPT ====================
+class EcoVisionTurbo:
+    def __init__(self):
+        self.session, self.input_name = load_optimized_model(MODEL_PATH)
+        self.cap = cv2.VideoCapture(1)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        
+        self.latest_frame = None
+        self.res_text, self.conf_text = "Ready", 0.0
+        self.is_running = True
+        self.last_trigger_time = 0
 
-def get_consensus_prediction(predictions, labels):
-    """Majority voting"""
-    counts = Counter(predictions.tolist())
-    most_common_idx, count = counts.most_common(1)[0]
-    confidence = count / len(predictions)
-    return labels[most_common_idx], confidence
+    def inference_thread(self):
+        """ This runs in the background so the UI doesn't freeze """
+        while self.is_running:
+            if self.latest_frame is not None:
+                h, w = self.latest_frame.shape[:2]
+                min_dim = min(h, w)
+                cx, cy = w // 2, h // 2
+                roi = self.latest_frame[cy-min_dim//2:cy+min_dim//2, cx-min_dim//2:cx+min_dim//2]
+                
+                gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                edges = cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 0), 50, 150)
+                
+                if cv2.countNonZero(edges) > EDGE_THRESHOLD:
+                    if (time.time() - self.last_trigger_time) > COOLDOWN_SECONDS:
+                        self.process_inference(roi)
+                        self.last_trigger_time = time.time()
+            time.sleep(0.01)
 
-# ==================== MAIN LOOP ====================
-def main():
-    print("Loading ONNX model...")
-    session, input_name = load_model(MODEL_PATH)
-    
-    # Camera setup
-    cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-    cap.set(cv2.CAP_PROP_FPS, 30)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    
-    if not cap.isOpened():
-        print("Error: Cannot open camera")
-        return
-    
-    print(f"Monitoring... Edge threshold: {EDGE_THRESHOLD}")
-    
-    # State variables
-    collection_mode = False
-    captured_frames = []
-    final_prediction = "Waiting..."
-    confidence = 0.0
-    last_trigger_time = 0
-    
-    try:
+    def process_inference(self, roi):
+        blob = cv2.dnn.blobFromImage(roi, 1.0/255.0, (TARGET_SIZE, TARGET_SIZE), swapRB=True)
+        
+        for i in range(3):
+            blob[0, i, :, :] = (blob[0, i, :, :] - (MEAN[i]/255.0)) * (STD[i]*255.0)
+
+        logits = self.session.run(None, {self.input_name: blob.astype(np.float32)})[0]
+        
+        exp_logits = np.exp(logits[0] / TEMPERATURE)
+        probs = exp_logits / np.sum(exp_logits)
+        
+        idx = np.argmax(probs)
+        self.res_text, self.conf_text = LABELS[idx], probs[idx]
+
+    def run(self):
+        threading.Thread(target=self.inference_thread, daemon=True).start()
+
         while True:
-            ret, frame = cap.read()
-            if not ret:
-                continue
+            ret, frame = self.cap.read()
+            if not ret: break
+            self.latest_frame = frame
+
+            color = (0, 255, 0) if self.conf_text > 0.7 else (0, 165, 255)
+            cv2.putText(frame, f"{self.res_text.upper()} ({self.conf_text:.1%})", 
+                        (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
             
-            edge_count = detect_object_presence(frame, DETECTION_SCALE)
-            current_time = time.time()
-            
-            can_trigger = (current_time - last_trigger_time) > COOLDOWN_SECONDS
-            should_trigger = edge_count > EDGE_THRESHOLD and can_trigger
-            
-            if should_trigger and not collection_mode:
-                print(f"\n[TRIGGERED] Edges: {edge_count}")
-                collection_mode = True
-                captured_frames = []
-            
-            if collection_mode:
-                captured_frames.append(frame.copy())
-                
-                if len(captured_frames) >= NUM_FRAMES:
-                    start_time = time.time()
-                    
-                    predictions = predict_batch(session, input_name, captured_frames)
-                    final_prediction, confidence = get_consensus_prediction(
-                        predictions, LABELS
-                    )
-                    
-                    inference_time = (time.time() - start_time) * 1000
-                    print(f"Result: {final_prediction} ({confidence:.0%})")
-                    print(f"Inference: {inference_time:.1f}ms")
-                    
-                    collection_mode = False
-                    last_trigger_time = current_time
-            
-            # Display
-            color = (0, 0, 255) if collection_mode else (0, 255, 0)
-            cv2.putText(frame, f"Edges: {edge_count}", (10, 25),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-            cv2.putText(frame, f"Bin: {final_prediction} ({confidence:.0%})", 
-                       (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-            
-            cv2.imshow('EcoVision', frame)
+            cv2.imshow('EcoVision Turbo', frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
+                self.is_running = False
                 break
-                
-    finally:
-        cap.release()
+
+        self.cap.release()
         cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    main()
+    EcoVisionTurbo().run()
