@@ -75,7 +75,7 @@ class Motors():
             self.stepper_angle += num_steps * STEP_DEG
             if num_steps > 0:
                 dir = CCW_SIGN * copysign(num_steps)
-                dir = True if dir == 1 else False
+                dir = False if dir == 1 else True
                 self.stepper.motor_go(dir, "1/16", num_steps)
             
             servo_angle = 0
