@@ -7,17 +7,17 @@ import RpiMotorLib
 import time
 
 # Stepper
-STEP_PIN = 17
-DIR_PIN = 22
-ENABLE_PIN = 27
-M1_PIN = 23
-M2_PIN = 24
-M3_PIN = 25
+STEP_PIN = 24
+DIR_PIN = 23
+ENABLE_PIN = 16
+M1_PIN = 17
+M2_PIN = 27
+M3_PIN = 22
 STEP_DEG = 360/200/16
 CCW_SIGN = 1
 
 # Servo
-OE_PIN = 4
+OE_PIN = 26
 DROP_ANGLE = -90
 CHANNEL = 0
 
