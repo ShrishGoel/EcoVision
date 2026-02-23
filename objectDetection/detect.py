@@ -50,25 +50,50 @@ class EcoVisionTurbo:
 
                 if cv2.countNonZero(edges) > EDGE_THRESHOLD:
                     if (time.time() - self.last_trigger_time) > COOLDOWN_SECONDS:
-                        self.process_inference(roi)
+
+                        self.res_text, self.conf_text = "Waiting...", 0.0
+                        time.sleep(3)
+                        
+                        self.res_text = "Analyzing..."
+                        frames_to_process = []
+                        for _ in range(5):
+                            if self.latest_frame is not None:
+                                curr_h, curr_w = self.latest_frame.shape[:2]
+                                curr_min = min(curr_h, curr_w)
+                                c_x, c_y = curr_w // 2, curr_h // 2
+                                current_roi = self.latest_frame[c_y-curr_min//2:c_y+curr_min//2, 
+                                                                c_x-curr_min//2:c_x+curr_min//2]
+                                frames_to_process.append(current_roi)
+                            
+                            time.sleep(0.1) 
+
+                        if frames_to_process:
+                            self.process_inference(frames_to_process)
+                            
                         self.last_trigger_time = time.time()
             time.sleep(0.01)
 
-    def process_inference(self, roi):
-        blob = cv2.dnn.blobFromImage(roi, 1.0/255.0,
-                                     (TARGET_SIZE, TARGET_SIZE), swapRB=True)
-        for i in range(3):
-            blob[0, i] = (blob[0, i] - (MEAN[i]/255.0)) * (STD[i]*255.0)
+    def process_inference(self, frames):
+        total_probs = np.zeros(len(LABELS))
+        
+        for roi in frames:
+            blob = cv2.dnn.blobFromImage(roi, 1.0/255.0,
+                                         (TARGET_SIZE, TARGET_SIZE), swapRB=True)
+            for i in range(3):
+                blob[0, i] = (blob[0, i] - (MEAN[i]/255.0)) * (STD[i]*255.0)
 
-        logits = self.session.run(None,
-                    {self.input_name: blob.astype(np.float32)})[0]
-        exp_logits = np.exp(logits[0] / TEMPERATURE)
-        probs = exp_logits / np.sum(exp_logits)
+            logits = self.session.run(None,
+                        {self.input_name: blob.astype(np.float32)})[0]
+            exp_logits = np.exp(logits[0] / TEMPERATURE)
+            probs = exp_logits / np.sum(exp_logits)
+            total_probs += probs
 
-        idx = int(np.argmax(probs))
-        self.res_text, self.conf_text = LABELS[idx], probs[idx]
+        avg_probs = total_probs / len(frames)
+        idx = int(np.argmax(avg_probs))
+        
+        self.res_text, self.conf_text = LABELS[idx], avg_probs[idx]
 
-        if probs[idx] > 0.7:   
+        if avg_probs[idx] > 0.7:   
             self.motors.sort(idx)        # <<< rotate + drop + return
 
     def run(self):
@@ -80,10 +105,17 @@ class EcoVisionTurbo:
                 break
             self.latest_frame = frame
 
-            color = (0, 255, 0) if self.conf_text > 0.7 else (0, 165, 255)
-            cv2.putText(frame, f"{self.res_text.upper()} ({self.conf_text:.1%})",
+            color = (0, 255, 0) if isinstance(self.conf_text, float) and self.conf_text > 0.7 else (0, 165, 255)
+            
+            if self.conf_text > 0.0:
+                display_text = f"{self.res_text.upper()} ({self.conf_text:.1%})"
+            else:
+                display_text = f"{self.res_text.upper()}"
+                
+            cv2.putText(frame, display_text,
                         (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
             cv2.imshow('EcoVision Turbo', frame)
+            
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 self.is_running = False
                 break
