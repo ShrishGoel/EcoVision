@@ -1,8 +1,6 @@
-# pip install adafruit-circuitpython-servokit
-
-from math import floor, copysign, sin, pi
+from math import floor, copysign
 from adafruit_servokit import ServoKit
-import GPIOEmulator as GPIO
+import RPi.GPIO as GPIO
 import RpiMotorLib
 import time
 
@@ -13,7 +11,7 @@ ENABLE_PIN = 16
 M1_PIN = 17
 M2_PIN = 27
 M3_PIN = 22
-STEP_DEG = 360/200/16
+STEP_DEG = 360 / 200 / 16
 CCW_SIGN = 1
 
 # Servo
@@ -21,7 +19,15 @@ OE_PIN = 26
 DROP_ANGLE = -90
 CHANNEL = 0
 
-class Motors():
+# Hardcoded bin angles
+BIN_ANGLES = {
+    0: 0,      # black
+    1: 120,    # blue
+    2: 240,    # green
+}
+
+
+class Motors:
     def __init__(self):
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(ENABLE_PIN, GPIO.OUT)
@@ -29,61 +35,42 @@ class Motors():
         self.enable_servo(True)
         self.enable_stepper(False)
 
-        self.servo = ServoKit(channels = 16).servo[CHANNEL]
+        self.servo = ServoKit(channels=16).servo[CHANNEL]
         self.stepper = RpiMotorLib.A4988Nema(DIR_PIN, STEP_PIN, (M1_PIN, M2_PIN, M3_PIN), "A4988")
-        self.stepper_angle = 0
-        self.servo_angle = 0
+        self.current_angle = 0
 
     def cleanup(self):
         self.enable_servo(False)
         self.enable_stepper(False)
         GPIO.cleanup()
 
-    def enable_stepper(enable):
-        if enable:
-              GPIO.output(ENABLE_PIN, GPIO.LOW)
-        else: GPIO.output(ENABLE_PIN, GPIO.HIGH)
+    def enable_stepper(self, enable):
+        GPIO.output(ENABLE_PIN, GPIO.LOW if enable else GPIO.HIGH)
 
-    def enable_servo(enable):
-        if enable:
-              GPIO.output(OE_PIN, GPIO.LOW)
-        else: GPIO.output(OE_PIN, GPIO.HIGH)
+    def enable_servo(self, enable):
+        GPIO.output(OE_PIN, GPIO.LOW if enable else GPIO.HIGH)
 
-    def rotate_to(self, angle, move_time, hold_time):
-        self.command = {
-            "angle": angle,
-            "move_time": move_time,
-            "hold_time": hold_time,
-            "start": time.time()
-        }
+    def _rotate(self, target_angle):
+        """Rotate stepper from current angle to target angle (blocking)."""
+        diff = target_angle - self.current_angle
+        num_steps = abs(int(round(diff / STEP_DEG)))
+        if num_steps == 0:
+            return
+        # True = clockwise, False = counter-clockwise (adjust with CCW_SIGN)
+        direction = (CCW_SIGN * copysign(1, diff)) < 0
+        self.stepper.motor_go(direction, "1/16", num_steps, 0.0005, False)
+        self.current_angle = target_angle
+
+    def sort(self, class_idx):
+        """Full blocking sort: rotate to bin, drop, return to 0."""
+        angle = BIN_ANGLES[class_idx]
+
         self.enable_stepper(True)
-    
-    def periodic(self):
-        if self.command:
-            t = time.time() - self.command["start"]
-            final_angle = self.command["angle"]
-            move = self.command["move_time"]
-            hold = self.command["hold_time"]
 
-            alpha = 1
-            if t < move: alpha = t / move
-            if t > move + hold: alpha = (t - hold) / move - 1
-            alpha = max(0, min(1, alpha))
-            alpha = sin(alpha * pi / 2) ** 2
+        self._rotate(angle)             # go to bin
+        self.servo.angle = DROP_ANGLE   # drop item
+        time.sleep(1.0)                 # wait for drop
+        self.servo.angle = 0            # reset servo
+        self._rotate(0)                 # return home
 
-            num_steps = floor((alpha * final_angle - self.stepper_angle) / STEP_DEG)
-            self.stepper_angle += num_steps * STEP_DEG
-            if num_steps > 0:
-                dir = CCW_SIGN * copysign(num_steps)
-                dir = False if dir == 1 else True
-                self.stepper.motor_go(dir, "1/16", num_steps)
-            
-            servo_angle = 0
-            if alpha == 1: servo_angle = DROP_ANGLE
-            if servo_angle != self.servo_angle:
-                self.servo_angle = servo_angle
-                self.servo.angle = servo_angle
-
-            if t > 2*move + hold:
-                del self.command
-                self.enable_stepper(False)
+        self.enable_stepper(False)
