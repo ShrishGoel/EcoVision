@@ -4,3 +4,6 @@ data/processedData/
 mobilenetv3_finetuned_best.pth
 model.onnx
 .mypy_cache
+data/rawData.zip
+data/sam_b.pt
+data/background.jpg
