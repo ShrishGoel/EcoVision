@@ -1,92 +1,130 @@
-from math import floor, copysign
-import RPi.GPIO as GPIO
-from RpiMotorLib import RpiMotorLib
-from adafruit_servokit import ServoKit
+import math
 import time
+import sys
+import signal
+import RPi.GPIO as GPIO
+from adafruit_servokit import ServoKit
 
-# Stepper Pins
 STEP_PIN = 24
 DIR_PIN = 23
 ENABLE_PIN = 16
-M1_PIN = 17
-M2_PIN = 27
-M3_PIN = 22
-
-# Servo Pins
+MODE_PINS = (17, 27, 22)
 OE_PIN = 26
-ANGLE = 90
-CHANNEL = 0
 
-# MATH: 1.8 for Full Step, 0.1125 for 1/16 step
-STEP_DEG = 1.8 
-CCW_SIGN = 1 # Change to -1 if motor spins opposite of intended
+MICROSTEP_MODE = "1/4"
+STEP_DEG = 1.8 / 4
 
-# Using signed angles for -40 to 40 range
 BIN_ANGLES = {
-    0: 40,      # Black
-    1: 0,       # Blue
-    2: -40,     # Green
+    0: 35,
+    1: 0,
+    2: -35,
 }
 
 class Motors:
     def __init__(self):
-        GPIO.setwarnings(False)
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(ENABLE_PIN, GPIO.OUT)
-        GPIO.setup(OE_PIN, GPIO.OUT)
-        self.enable_stepper(True)
-        self.enable_servo(True)
+        try:
+            GPIO.setwarnings(False)
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup([STEP_PIN, DIR_PIN, ENABLE_PIN, OE_PIN], GPIO.OUT)
+            GPIO.setup(MODE_PINS, GPIO.OUT)
 
-        self.servo = ServoKit(channels = 16).servo[CHANNEL]
-        self.stepper = RpiMotorLib.A4988Nema(DIR_PIN, STEP_PIN, (M1_PIN, M2_PIN, M3_PIN), "A4988")
-        self.current_angle = 0
+            GPIO.output(MODE_PINS, (GPIO.LOW, GPIO.HIGH, GPIO.LOW))
 
-    def cleanup(self):
-        # 1. Force the driver OFF
-        self.enable_stepper(False)
-        self.enable_servo(False)
-        
-        # 2. Force STEP and DIR to a solid LOW state
-        GPIO.output(STEP_PIN, GPIO.LOW)
-        GPIO.output(DIR_PIN, GPIO.LOW)
-        
-        # 3. Small delay to let pins settle
-        time.sleep(0.1)
-        
-        # 4. Cleanup
-        GPIO.cleanup()
-        print("Motors safely disabled.")
+            signal.signal(signal.SIGINT, self._signal_handler)
+
+            self.enable_stepper(True)
+            self.enable_servo(True)
+
+            self.servo = ServoKit(channels=16).servo[0]
+            self.current_angle = 0
+            print("Hardware initialized. Trapezoidal Profiling Active.")
+        except Exception as e:
+            print(f"Initialization Error: {e}")
+            self.cleanup()
+
+    def _signal_handler(self, sig, frame):
+        print("\n[STOP] Emergency Interrupt!")
+        self.cleanup()
+        sys.exit(0)
 
     def enable_stepper(self, enable):
         GPIO.output(ENABLE_PIN, GPIO.LOW if enable else GPIO.HIGH)
 
-    def enable_servo(enable):
+    def enable_servo(self, enable):
         GPIO.output(OE_PIN, GPIO.LOW if enable else GPIO.HIGH)
 
     def _rotate(self, target_angle):
-        """Rotate to an absolute angle position."""
         diff = target_angle - self.current_angle
         num_steps = abs(int(round(diff / STEP_DEG)))
-        
         if num_steps == 0:
             return
-            
-        # Direction logic based on the sign of the difference
-        direction = (CCW_SIGN * copysign(1, diff)) < 0
-        
-        # Using 0.005 delay for stability. If vibrating, increase to 0.01
-        self.stepper.motor_go(direction, "Full", num_steps, 0.005, False)
-        
+
+        GPIO.output(DIR_PIN, GPIO.HIGH if diff > 0 else GPIO.LOW)
+
+        cruise_delay = 0.008
+        start_delay = 0.15
+        ramp_time = 2
+
+        start_time = time.time()
+
+        for i in range(num_steps):
+            elapsed = time.time() - start_time
+            remaining_steps = num_steps - i
+            steps_to_brake = ramp_time / (cruise_delay * 2)
+
+            if elapsed < ramp_time:
+                factor = elapsed / ramp_time
+                delay = start_delay - (factor * (start_delay - cruise_delay))
+            elif remaining_steps < steps_to_brake:
+                factor = 1 - (remaining_steps / steps_to_brake)
+                delay = cruise_delay + (factor * (start_delay - cruise_delay))
+            else:
+                delay = cruise_delay
+
+            GPIO.output(STEP_PIN, GPIO.HIGH)
+            time.sleep(delay)
+            GPIO.output(STEP_PIN, GPIO.LOW)
+            time.sleep(delay)
+
         self.current_angle = target_angle
-        print(f"Current Position: {self.current_angle}°")
 
     def sort(self, class_idx):
-        """Standard sort: Go to bin and return home."""
-        if class_idx not in BIN_ANGLES: return
+        if class_idx not in BIN_ANGLES:
+            return
         target = BIN_ANGLES[class_idx]
 
         self._rotate(target)
-        self.servo.angle = ANGLE             
         time.sleep(0.5)
-        self.servo.angle = 0             
-        self._rotate(0) 
+
+        print("Dumping...")
+        self.servo.angle = 10
+        time.sleep(3)
+
+        self.servo.angle = 160
+        time.sleep(1)
+
+        print("Returning Home...")
+        self._rotate(0)
+        print("Cycle Complete.")
+
+    def cleanup(self):
+        print("Cleaning up GPIO...")
+        try:
+            self.enable_stepper(False)
+            GPIO.cleanup()
+        except:
+            pass
+
+if __name__ == "__main__":
+    m = Motors()
+    try:
+        print("Starting Loop Test. Press Ctrl+C to stop.")
+        while True:
+            m.sort(0)
+            time.sleep(2)
+            m.sort(2)
+            time.sleep(2)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        m.cleanup()
