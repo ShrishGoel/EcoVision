@@ -10,8 +10,8 @@ import os
 import numpy as np
 
 # Paths
-TRAIN_DIR = "data/processedData/train"
-VAL_DIR = "data/processedData/val"
+TRAIN_DIR = "../data/processedData/train"
+VAL_DIR = "../data/processedData/val"
 
 # Hyperparameters
 BATCH_SIZE_PER_GPU = 64

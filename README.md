@@ -17,18 +17,19 @@ Camera → Edge Detection → MobileNetV3 (ONNX) → Motor Controller → Sortin
 ```
 EcoVision/
 ├── data/
-│   ├── process.py          # SAM 3.0 segmentation + background compositing
-│   ├── split.py            # Train/val split utility
-│   └── background.jpg      # Clean background for compositing
-├── model/
-│   ├── trainMNV3.py         # MobileNetV3 distributed training
-│   └── trainmatrix.txt      # Classification metrics
-├── objectDetection/
-│   ├── detect.py            # Real-time detection + sorting pipeline
-│   ├── toOnnx.py            # PyTorch → ONNX export
-│   └── test_motor.py        # Stepper sweep test
-├── motors.py                # Stepper + servo hardware controller
-└── .gitignore
+│   ├── process.py        # SAM 3.0 segmentation + background compositing
+│   ├── split.py          # Train/val split utility
+│   └── background.jpg    # Clean background for compositing
+├── training/
+│   ├── train.py          # MobileNetV3 distributed training
+│   ├── export.py         # PyTorch → ONNX export
+│   └── results.txt       # Classification metrics
+├── inference/
+│   ├── detect.py         # Real-time detection + sorting pipeline
+│   ├── motors.py         # Stepper + servo hardware controller
+│   └── test_motor.py     # Motor sweep test
+├── .gitignore
+└── README.md
 ```
 
 ## Data Pipeline
@@ -48,7 +49,7 @@ EcoVision/
 MobileNetV3-Large was selected for deployment due to its balance of accuracy and inference speed on Raspberry Pi.
 
 ```bash
-cd model && python trainMNV3.py
+cd training && python train.py
 ```
 
 Key training techniques:
@@ -59,7 +60,7 @@ Key training techniques:
 
 ### Preliminary Results
 
-Results from an early training run on ~1,000 validation images (see `model/trainmatrix.txt`):
+Results from an early training run on ~1,000 validation images (see `training/results.txt`):
 
 ```
               precision    recall  f1-score   support
@@ -77,13 +78,13 @@ Results from an early training run on ~1,000 validation images (see `model/train
 ### Export to ONNX
 
 ```bash
-cd objectDetection && python toOnnx.py
+cd training && python export.py
 ```
 
 ### Run on Raspberry Pi
 
 ```bash
-cd objectDetection && python detect.py
+cd inference && python detect.py
 ```
 
 Press `q` to quit. The system:
