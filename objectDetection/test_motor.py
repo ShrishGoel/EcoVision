@@ -1,15 +1,18 @@
+"""Sweep test for stepper motor range of motion."""
+
 import sys
 import time
 from pathlib import Path
 
-# Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from motors import Motors
 
-def run_sweep(): 
+
+def run_sweep():
+    """Continuously sweep the stepper between -40, 0, and +40 degrees."""
     m = Motors()
     try:
-        print("Starting Sweep Test: -40 to 0 to 40 to 0")
+        print("Starting sweep test: -40 -> 0 -> +40 -> 0")
         m.enable_stepper(True)
         time.sleep(0.5)
 
@@ -35,6 +38,7 @@ def run_sweep():
     finally:
         m.cleanup()
         print("Done.")
+
 
 if __name__ == "__main__":
     run_sweep()
